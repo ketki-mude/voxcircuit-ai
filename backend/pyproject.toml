@@ -12,6 +12,9 @@ dependencies = [
     "alembic>=1.20",
     "psycopg[binary]>=3.3",
     "google-genai>=2.31",
+    "pyjwt>=2.10",
+    "pyyaml>=6.0",
+    "httpx>=0.28",
 ]
 
 [project.optional-dependencies]
@@ -22,6 +25,7 @@ dev = [
     "httpx2>=2.14",
     "ruff>=0.17",
     "mypy>=2.4",
+    "types-pyyaml>=6.0",
 ]
 
 [build-system]
@@ -30,6 +34,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["app*"]
+
+[tool.setuptools.package-data]
+app = ["evaluation/*.yaml"]
 
 [tool.ruff]
 line-length = 100

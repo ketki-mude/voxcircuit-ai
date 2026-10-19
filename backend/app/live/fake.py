@@ -1,11 +1,14 @@
 import asyncio
 from collections import deque
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
+from typing import Any
 
-from app.live.base import LiveSession, LiveSessionError
+from app.live.base import LiveSession, LiveSessionError, ToolResponse
 from app.live.events import LiveEvent, OutputTranscript, TurnComplete
 
-ScriptStep = LiveEvent | LiveSessionError
+# A step is an event, an error to raise, or a function that builds the event when it is
+# played (for values only known at run time, such as a lead_id from an earlier tool call).
+ScriptStep = LiveEvent | LiveSessionError | Callable[["FakeLiveSession"], LiveEvent]
 
 DEMO_REPLIES = (
     "Hi, I'm Maya, an AI assistant for Northstar Insurance. I can set up a call with a "
@@ -31,7 +34,8 @@ def scripted_reply(text: str) -> list[ScriptStep]:
 class FakeLiveSession(LiveSession):
     """Offline LiveSession that replays scripted events. No network, no API key.
 
-    Each caller text turn plays the next scripted turn. With audio_turn_bytes set, every
+    Each caller text turn, and each batch of tool responses, plays the next scripted turn
+    (the model continues after a tool result). With audio_turn_bytes set, every
     that many bytes of caller audio also play the next turn, standing in for the end of an
     utterance. A script step that is a LiveSessionError is raised from events(), which lets
     tests simulate provider failures.
@@ -56,6 +60,7 @@ class FakeLiveSession(LiveSession):
         self._closed = False
         self.sent_text: list[str] = []
         self.sent_audio_bytes = 0
+        self.tool_responses: list[ToolResponse] = []
 
     @classmethod
     def demo(cls) -> "FakeLiveSession":
@@ -84,6 +89,18 @@ class FakeLiveSession(LiveSession):
             self._audio_since_turn = 0
             self._play_next_turn()
 
+    async def send_tool_responses(self, responses: Sequence[ToolResponse]) -> None:
+        self._require_open()
+        self.tool_responses.extend(responses)
+        self._play_next_turn()
+
+    def last_response(self, name: str) -> dict[str, Any]:
+        """The most recent tool response sent for the named function."""
+        for response in reversed(self.tool_responses):
+            if response.name == name:
+                return response.response
+        raise LookupError(f"no response for {name}")
+
     def _play_next_turn(self) -> None:
         turn = self._turns.popleft() if self._turns else self._fallback
         for step in turn:
@@ -96,6 +113,8 @@ class FakeLiveSession(LiveSession):
                 return
             if isinstance(step, LiveSessionError):
                 raise step
+            if callable(step):
+                step = step(self)
             if self._step_delay_s:
                 await asyncio.sleep(self._step_delay_s)
             yield step

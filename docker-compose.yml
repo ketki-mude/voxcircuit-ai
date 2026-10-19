@@ -1,0 +1,64 @@
+# The whole stack on one machine: Postgres, the FastAPI backend and the Next.js frontend.
+#
+#   cp .env.example .env            # set POSTGRES_PASSWORD (letters and digits)
+#   docker compose up --build
+#   docker compose exec backend python -m app.cli create-user \
+#       --email you@example.com --name "Your Name" --role admin
+#
+# Open http://localhost:3000. The backend reads backend/.env if it exists (Gemini key,
+# APP_SECRET_KEY, integrations); DATABASE_URL and FRONTEND_ORIGINS are set here.
+
+name: voxcircuit
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: voxcircuit
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env (see .env.example)}
+      POSTGRES_DB: voxcircuit
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U voxcircuit -d voxcircuit"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    # Not published on the host: only the backend connects to it.
+
+  backend:
+    build: ./backend
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+psycopg://voxcircuit:${POSTGRES_PASSWORD}@postgres:5432/voxcircuit
+      FRONTEND_ORIGINS: http://localhost:3000
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8010:8010"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8010/api/health', timeout=3)"
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_BACKEND_WS_URL: ws://localhost:8010/ws/call
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:

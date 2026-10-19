@@ -4,7 +4,7 @@ GeminiLiveSession translates Live API server messages into these, and FakeLiveSe
 replays them from a script, so the call handler never touches SDK types.
 """
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -68,6 +68,26 @@ class GoAway(_Event):
     time_left_seconds: float | None = None
 
 
+class FunctionCall(_Event):
+    id: str
+    name: str
+    args: dict[str, Any]
+
+
+class ToolCall(_Event):
+    """The model wants these functions run. It waits for the responses (blocking tools)."""
+
+    type: Literal["tool_call"] = "tool_call"
+    calls: tuple[FunctionCall, ...]
+
+
+class ToolCallCancelled(_Event):
+    """The model no longer needs these calls' results (for example, after a barge-in)."""
+
+    type: Literal["tool_call_cancelled"] = "tool_call_cancelled"
+    ids: tuple[str, ...]
+
+
 class SessionResumed(_Event):
     """The session reconnected using its resumption handle."""
 
@@ -82,6 +102,8 @@ LiveEvent = Annotated[
     | TurnComplete
     | Usage
     | GoAway
+    | ToolCall
+    | ToolCallCancelled
     | SessionResumed,
     Field(discriminator="type"),
 ]

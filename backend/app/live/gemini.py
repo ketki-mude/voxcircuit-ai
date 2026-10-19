@@ -2,7 +2,7 @@ import asyncio
 import contextlib
 import logging
 import re
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from contextlib import AsyncExitStack, aclosing
 from typing import cast
 
@@ -10,16 +10,26 @@ from google import genai
 from google.genai import types
 from google.genai.live import AsyncSession
 
-from app.live.base import LiveConfigError, LiveQuotaError, LiveSession, LiveSessionError
+from app.live.base import (
+    FunctionSpec,
+    LiveConfigError,
+    LiveQuotaError,
+    LiveSession,
+    LiveSessionError,
+    ToolResponse,
+)
 from app.live.events import (
     INPUT_SAMPLE_RATE,
     AudioChunk,
+    FunctionCall,
     GoAway,
     InputTranscript,
     Interrupted,
     LiveEvent,
     OutputTranscript,
     SessionResumed,
+    ToolCall,
+    ToolCallCancelled,
     TurnComplete,
     Usage,
 )
@@ -88,9 +98,34 @@ def translate_message(message: types.LiveServerMessage) -> list[LiveEvent]:
                 total_tokens=usage.total_token_count,
             )
         )
+    if message.tool_call is not None and message.tool_call.function_calls:
+        calls = tuple(
+            FunctionCall(id=fc.id or "", name=fc.name or "", args=dict(fc.args or {}))
+            for fc in message.tool_call.function_calls
+        )
+        events.append(ToolCall(calls=calls))
+    cancelled = message.tool_call_cancellation
+    if cancelled is not None and cancelled.ids:
+        events.append(ToolCallCancelled(ids=tuple(cancelled.ids)))
     if message.go_away is not None:
         events.append(GoAway(time_left_seconds=parse_duration(message.go_away.time_left)))
     return events
+
+
+def function_declaration(spec: FunctionSpec) -> types.FunctionDeclaration:
+    """Declare a function with its Pydantic-derived JSON schema as a Gemini Schema."""
+    schema = (
+        types.Schema.from_json_schema(
+            json_schema=types.JSONSchema.model_validate(spec.parameters),
+            raise_error_on_unsupported_field=True,
+        )
+        if spec.parameters.get("properties")
+        else None  # A function without arguments declares no parameters.
+    )
+    # No behavior is set: calls are blocking (the default), so the model waits for results.
+    return types.FunctionDeclaration(
+        name=spec.name, description=spec.description, parameters=schema
+    )
 
 
 class GeminiLiveSession(LiveSession):
@@ -114,10 +149,16 @@ class GeminiLiveSession(LiveSession):
         model: str,
         system_instruction: str,
         silence_duration_ms: int,
+        functions: Sequence[FunctionSpec] = (),
         connect_timeout_s: float = 15.0,
         max_reconnects: int = 3,
     ) -> None:
         self._client = client
+        self._tools = (
+            [types.Tool(function_declarations=[function_declaration(f) for f in functions])]
+            if functions
+            else None
+        )
         self._model = model
         self._system_instruction = system_instruction
         self._silence_duration_ms = silence_duration_ms
@@ -151,6 +192,7 @@ class GeminiLiveSession(LiveSession):
             ),
             # handle=None starts a new resumable session; a handle resumes the old one.
             session_resumption=types.SessionResumptionConfig(handle=self._handle),
+            tools=self._tools,
         )
 
     async def connect(self) -> None:
@@ -187,6 +229,21 @@ class GeminiLiveSession(LiveSession):
             error = classify_error(exc)
             if not self._can_resume(error):
                 raise error from exc
+
+    async def send_tool_responses(self, responses: Sequence[ToolResponse]) -> None:
+        session = await self._current()
+        try:
+            await session.send_tool_response(
+                function_responses=[
+                    types.FunctionResponse(id=r.id, name=r.name, response=r.response)
+                    for r in responses
+                ]
+            )
+        except Exception as exc:
+            error = classify_error(exc)
+            if not self._can_resume(error):
+                raise error from exc
+            log.warning("Tool response lost while the session reconnects: %s", error)
 
     async def events(self) -> AsyncIterator[LiveEvent]:
         failures = 0

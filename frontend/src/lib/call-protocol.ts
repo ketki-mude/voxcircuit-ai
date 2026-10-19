@@ -16,7 +16,8 @@ export type EndReason =
   | "max_turns"
   | "daily_cap"
   | "quota"
-  | "error";
+  | "error"
+  | "handed_off";
 
 // Client -> server
 
@@ -33,6 +34,8 @@ export interface CallStarted {
   engine: Engine;
   max_call_seconds: number;
   max_turns: number;
+  /** Bearer token for this call's REST endpoints (approvals). */
+  session_token: string;
 }
 
 export interface UserDelta {
@@ -79,6 +82,76 @@ export interface UsageUpdate {
   estimated_cost_usd: number;
 }
 
+/** The backend ran one of Maya's tools. Drives the circuit timeline. */
+export interface ToolEvent {
+  type: "tool";
+  name: string;
+  ok: boolean;
+  summary: string;
+}
+
+export interface ApprovalRequested {
+  type: "approval_requested";
+  approval_id: string;
+  action: "book" | "reschedule";
+  rows: { label: string; value: string }[];
+  expires_at: string;
+}
+
+export interface ApprovalResolved {
+  type: "approval_resolved";
+  approval_id: string;
+  status: "approved" | "cancelled" | "expired";
+}
+
+export interface StepReport {
+  step: "crm_upsert" | "calendar_event";
+  status: "done" | "failed";
+  attempts: number;
+}
+
+export interface BookingResult {
+  type: "booking_result";
+  approval_id: string;
+  success: boolean;
+  summary: string;
+  steps: StepReport[];
+}
+
+/** Demo only: the code a real system would text to the phone on file. */
+export interface VerificationStarted {
+  type: "verification_started";
+  challenge_id: string;
+  masked_email: string;
+  demo_code: string;
+  expires_at: string;
+}
+
+export type VerificationStatus = "verified" | "wrong_code" | "failed" | "expired" | "no_challenge";
+
+export interface VerificationResult {
+  type: "verification_result";
+  status: VerificationStatus;
+  attempts_left: number;
+  returning_customer: boolean;
+}
+
+export interface Handoff {
+  type: "handoff";
+  reason: string;
+  label: string;
+}
+
+export interface DataDeleted {
+  type: "data_deleted";
+}
+
+/** A team member took over the call from the control room. */
+export interface HandoffTaken {
+  type: "handoff_taken";
+  agent_name: string;
+}
+
 export interface CallEnded {
   type: "call_ended";
   reason: EndReason;
@@ -100,6 +173,15 @@ export type ServerMessage =
   | InterruptedNotice
   | TurnCompleted
   | UsageUpdate
+  | ToolEvent
+  | ApprovalRequested
+  | ApprovalResolved
+  | BookingResult
+  | VerificationStarted
+  | VerificationResult
+  | Handoff
+  | DataDeleted
+  | HandoffTaken
   | CallEnded
   | ErrorNotice;
 
@@ -112,6 +194,15 @@ const SERVER_TYPES = new Set<ServerMessage["type"]>([
   "interrupted",
   "turn_complete",
   "usage",
+  "tool",
+  "approval_requested",
+  "approval_resolved",
+  "booking_result",
+  "verification_started",
+  "verification_result",
+  "handoff",
+  "data_deleted",
+  "handoff_taken",
   "call_ended",
   "error",
 ]);

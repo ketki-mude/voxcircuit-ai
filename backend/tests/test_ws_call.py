@@ -2,10 +2,10 @@ import uuid
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import Engine, func, select
+from sqlalchemy import Engine, func, not_, select
 from starlette.websockets import WebSocketDisconnect
 
-from app.calls.recorder import start_of_today
+from app.calls.recorder import OFFLINE_EVALUATION, start_of_today
 from app.live.base import LiveQuotaError
 from app.live.events import AudioChunk, Interrupted, OutputTranscript, TurnComplete, Usage
 from app.live.fake import scripted_reply
@@ -140,7 +140,9 @@ def test_gemini_without_api_key_reports_not_configured(
 def test_daily_cap_blocks_new_calls(make_client: AppFactory, db_engine: Engine) -> None:
     with db_engine.connect() as conn:
         calls_today = conn.scalar(
-            select(func.count()).select_from(Call).where(Call.started_at >= start_of_today())
+            select(func.count())
+            .select_from(Call)
+            .where(Call.started_at >= start_of_today(), not_(OFFLINE_EVALUATION))
         )
     client = make_client(sessions=FakeSessions([]), daily_call_cap=calls_today or 0)
     before = count_calls(db_engine)

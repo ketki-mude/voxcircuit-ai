@@ -4,28 +4,51 @@ import logging
 import time
 import uuid
 from collections.abc import Coroutine
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
-from fastapi import WebSocket, WebSocketDisconnect
+from fastapi import WebSocketDisconnect
 from pydantic import ValidationError
 from starlette.types import Message as AsgiMessage
 from starlette.websockets import WebSocketState
 
+from app.booking.approvals import ApprovalService
+from app.booking.schemas import BookingTicket
 from app.calls import protocol as proto
 from app.calls.latency import LatencyTracker
-from app.calls.recorder import CallRecorder
+from app.calls.registry import (
+    ApprovalResolved,
+    CallNotice,
+    DataDeleted,
+    HandoffTaken,
+    VerificationChecked,
+    VerificationStarted,
+)
+from app.calls.services import CallServices
 from app.calls.usage import UsageMeter
 from app.config import Settings
 from app.live import events as ev
 from app.live.audio import INPUT_BYTES_PER_SECOND, is_speech
-from app.live.base import LiveConfigError, LiveQuotaError, LiveSession, LiveSessionError
+from app.live.base import (
+    LiveConfigError,
+    LiveQuotaError,
+    LiveSession,
+    LiveSessionError,
+    ToolResponse,
+)
 from app.live.events import BYTES_PER_SAMPLE
 from app.live.factory import InputMode, LiveSessionFactory
-from app.prompts import KICKOFF_TEXT
+from app.models import Approval
+from app.prompts import KICKOFF_TEXT, SYSTEM_PREFIX
+from app.safety.handoff import REASON_LABELS, HandoffReason, HandoffRules
+from app.safety.policy import check_reply, correction_notice
+from app.tools.executor import ToolExecutor
+from app.verification.types import CheckResult
 
 log = logging.getLogger(__name__)
 
 START_TIMEOUT_S = 30.0
+# The caller token outlives the call a little, so a late click gets a clear answer.
+TOKEN_GRACE_SECONDS = 300
 
 NOT_CONFIGURED_MESSAGE = (
     "The AI model is not configured on the server. Add GEMINI_API_KEY to backend/.env, "
@@ -39,8 +62,26 @@ END_MESSAGES: dict[proto.EndReason, str] = {
     "daily_cap": "Today's demo call limit has been reached. Please try again tomorrow.",
     "quota": "The AI service's free quota is used up for now. Please try again later.",
     "error": "Something went wrong with the AI connection, so the call has ended.",
+    "handed_off": "A licensed agent has taken over and will contact you shortly.",
 }
 FAILED_REASONS: frozenset[proto.EndReason] = frozenset({"quota", "error"})
+
+
+class CallSocket(Protocol):
+    """What the handler needs from a WebSocket. Starlette's WebSocket fits, and so does the
+    in-memory socket the evaluation runner uses to drive real calls."""
+
+    application_state: WebSocketState
+
+    async def accept(self) -> None: ...
+
+    async def receive(self) -> AsgiMessage: ...
+
+    async def send_text(self, data: str) -> None: ...
+
+    async def send_bytes(self, data: bytes) -> None: ...
+
+    async def close(self, code: int = 1000, reason: str | None = None) -> None: ...
 
 
 class CallHandler:
@@ -48,22 +89,33 @@ class CallHandler:
 
     The browser sends a start message (with consent), then typed turns and, in an audio
     call, binary caller audio. The backend relays Maya's audio back, stores each finalized
-    turn (typed text or transcript, never audio), meters usage, measures latency and
-    enforces the call caps.
+    turn (typed text or transcript, never audio), runs the model's tools, relays booking
+    approvals and verification, applies the handoff rules and the policy monitor, meters
+    usage, measures latency and enforces the call caps.
     """
 
     def __init__(
         self,
         *,
-        websocket: WebSocket,
+        websocket: CallSocket,
         settings: Settings,
-        recorder: CallRecorder,
+        services: CallServices,
         session_factory: LiveSessionFactory,
+        purpose: Literal["live", "evaluation"] = "live",
     ) -> None:
         self._ws = websocket
+        self._purpose = purpose
         self._settings = settings
-        self._recorder = recorder
+        self._services = services
+        self._recorder = services.recorder
+        self._approvals: ApprovalService = services.approvals
         self._session_factory = session_factory
+        self._inbox: asyncio.Queue[CallNotice] = asyncio.Queue()
+        self._tools: ToolExecutor | None = None
+        self._session: LiveSession | None = None  # Set while the live session is open.
+        self._rules = HandoffRules()
+        self._booking_confirmed = False
+        self._end_after_reply = False  # Set when a team member takes over.
         self._call_id: uuid.UUID | None = None
         self._input_mode: InputMode = "text"
         self._client_gone = False
@@ -102,6 +154,7 @@ class CallHandler:
             input_mode=start.input_mode,
             model=self._settings.gemini_live_model if start.engine == "gemini" else None,
             daily_cap=self._settings.daily_call_cap,
+            purpose=self._purpose,
         )
         if call_id is None:
             await self._send(proto.CallEnded(reason="daily_cap", message=END_MESSAGES["daily_cap"]))
@@ -111,24 +164,46 @@ class CallHandler:
         await self._recorder.audit(
             call_id, "caller", "call.consent", {"notice": proto.CONSENT_NOTICE}
         )
-        reason = await self._run_call(session, start)
-        await self._finish(reason)
+        self._inbox = self._services.registry.open(call_id)
+        self._tools = ToolExecutor(
+            call_id=call_id,
+            settings=self._settings,
+            sessionmaker=self._services.sessionmaker,
+            calendar=self._services.calendar,
+            approvals=self._approvals,
+            verification=self._services.verification,
+            recorder=self._recorder,
+        )
+        try:
+            reason = await self._run_call(session, start)
+            await self._finish(reason)
+        finally:
+            self._services.registry.close(call_id)
 
     async def _run_call(self, session: LiveSession, start: proto.StartCall) -> proto.EndReason:
         try:
             async with session:
+                self._session = session
                 self._started_at = time.monotonic()
+                call_id = self._require_call_id()
+                token = self._services.tokens.issue(
+                    call_id, ttl_seconds=self._settings.max_call_seconds + TOKEN_GRACE_SECONDS
+                )
                 await self._send(
                     proto.CallStarted(
-                        call_id=self._require_call_id(),
+                        call_id=call_id,
                         engine=start.engine,
                         max_call_seconds=self._settings.max_call_seconds,
                         max_turns=self._settings.max_turns,
+                        session_token=token,
                     )
                 )
                 await self._send_to_model(session, KICKOFF_TEXT)
                 return await self._race(
-                    self._pump_client(session), self._pump_model(session), self._call_timer()
+                    self._pump_client(session),
+                    self._pump_model(session),
+                    self._pump_inbox(session),
+                    self._call_timer(),
                 )
         except LiveQuotaError as exc:
             log.warning("Call %s hit a quota limit: %s", self._call_id, exc)
@@ -179,11 +254,20 @@ class CallHandler:
                         )
                     )
                 case proto.UserText(text=text):
+                    if SYSTEM_PREFIX[:10].lower() in text.lower():
+                        await self._send(
+                            proto.ErrorNotice(
+                                code="invalid_message",
+                                message="That looks like a system message, so it was not sent.",
+                            )
+                        )
+                        continue
                     if self._user_turns >= self._settings.max_turns:
                         return "max_turns"
                     self._user_turns += 1
                     await self._save_message("user", "typed", text)
                     await self._send_to_model(session, text)
+                    await self._check_caller(text)
 
     async def _on_caller_audio(self, session: LiveSession, pcm: bytes) -> None:
         if self._input_mode != "audio":
@@ -234,6 +318,8 @@ class CallHandler:
                     await self._finish_reply(interrupted=False)
                     await self._flush_usage()
                     await self._send(proto.TurnCompleted(latency_ms=latency_ms))
+                    if self._end_after_reply:
+                        return "handed_off"
                     if self._user_turns >= self._settings.max_turns:
                         return "max_turns"
                 case ev.Usage():
@@ -249,8 +335,165 @@ class CallHandler:
                     )
                 case ev.SessionResumed():
                     await self._recorder.audit(self._call_id, "system", "live.resumed")
+                case ev.ToolCall(calls=calls):
+                    await self._run_tools(session, calls)
+                case ev.ToolCallCancelled(ids=ids):
+                    await self._recorder.audit(
+                        self._call_id, "model", "tool.cancelled", {"provider_call_ids": list(ids)}
+                    )
         log.warning("Call %s: live session ended without being closed", self._call_id)
         return "error"
+
+    async def _run_tools(self, session: LiveSession, calls: tuple[ev.FunctionCall, ...]) -> None:
+        tools = self._require_tools()
+        responses = []
+        handoffs: list[tuple[HandoffReason, bool]] = []
+        for call in calls:
+            result = await tools.execute(call)
+            await self._send(proto.ToolEvent(name=call.name, ok=result.ok, summary=result.summary))
+            for replaced in result.replaced_approvals:
+                await self._send(
+                    proto.ApprovalResolvedMessage(approval_id=replaced, status="cancelled")
+                )
+            if result.approval is not None:
+                await self._send(_ticket(result.approval))
+            responses.append(ToolResponse(id=call.id, name=call.name, response=result.response))
+            if result.handoff is not None:
+                handoffs.append((result.handoff, False))  # The tool response tells Maya.
+            elif reason := HandoffRules.after_tool(
+                call.name,
+                ok=result.ok,
+                failures=tools.failures,
+                corrected=result.corrected,
+                corrections=tools.lead.corrections,
+            ):
+                handoffs.append((reason, True))
+        await session.send_tool_responses(responses)
+        for reason, tell_model in handoffs:
+            await self._hand_off(reason, tell_model=tell_model)
+
+    async def _pump_inbox(self, session: LiveSession) -> proto.EndReason:
+        """Events for this call from REST endpoints: approvals, verification, deletion."""
+        while True:
+            notice = await self._inbox.get()
+            match notice:
+                case ApprovalResolved():
+                    await self._on_approval_resolved(notice)
+                case VerificationStarted(challenge=challenge):
+                    await self._send(
+                        proto.VerificationStartedMessage(
+                            challenge_id=challenge.id,
+                            masked_email=challenge.masked_email,
+                            demo_code=challenge.code,
+                            expires_at=challenge.expires_at,
+                        )
+                    )
+                case VerificationChecked(result=result):
+                    await self._on_verification_checked(result)
+                case HandoffTaken(agent_name=agent_name):
+                    await self._send(proto.HandoffTakenMessage(agent_name=agent_name))
+                    self._end_after_reply = True
+                    await self._notify_model(
+                        f"A licensed agent, {agent_name}, has taken over this call. Tell the "
+                        f"caller {agent_name} will contact them shortly, thank them, and say "
+                        "goodbye."
+                    )
+                case DataDeleted():
+                    self._require_tools().forget_caller()
+                    await self._send(proto.DataDeletedMessage())
+                    await self._notify_model(
+                        "The caller's stored data was deleted at their request. Do not use "
+                        "or repeat any details they gave before this point."
+                    )
+
+    async def _on_verification_checked(self, result: CheckResult) -> None:
+        await self._send(
+            proto.VerificationResultMessage(
+                status=result.status,
+                attempts_left=result.attempts_left,
+                returning_customer=result.returning_customer,
+            )
+        )
+        if result.status == "verified":
+            await self._notify_model(
+                "The caller is verified as a returning customer. You may call "
+                "get_previous_interactions now. Use their first name only."
+                if result.returning_customer
+                else "The caller entered the right code, but no previous interactions are "
+                "on file for that email. Continue as a new caller."
+            )
+        elif result.status == "failed":
+            await self._hand_off("verification_failed")
+        elif result.status == "expired":
+            await self._notify_model(
+                "The verification code expired before the caller entered it. "
+                "Offer to send a new one."
+            )
+
+    async def _on_approval_resolved(self, notice: ApprovalResolved) -> None:
+        if notice.status not in ("approved", "cancelled", "expired"):
+            return
+        await self._send(
+            proto.ApprovalResolvedMessage(approval_id=notice.approval_id, status=notice.status)
+        )
+        outcome = notice.outcome
+        if outcome is not None:
+            await self._send(
+                proto.BookingResult(
+                    approval_id=notice.approval_id,
+                    success=outcome.success,
+                    summary=outcome.summary,
+                    steps=outcome.steps,
+                )
+            )
+            close = (
+                "Tell the caller it is confirmed."
+                if outcome.success
+                else "Tell the caller exactly this. It is not booked."
+            )
+            if outcome.success:
+                self._booking_confirmed = True
+            await self._notify_model(f"Booking result: {outcome.summary} {close}")
+            if not outcome.success and outcome.steps:
+                # A step failed after retrying; the summary already says an agent follows up.
+                await self._hand_off("booking_incomplete", tell_model=False)
+        elif notice.status == "cancelled":
+            await self._notify_model(
+                "The caller pressed Cancel on the booking ticket. Nothing was booked. "
+                "Confirm that, and ask whether they want a different time."
+            )
+        elif notice.status == "expired":
+            await self._notify_model(
+                "The booking ticket expired before the caller approved it. Nothing was booked."
+            )
+
+    async def _check_caller(self, text: str) -> None:
+        """Apply the handoff rules to a finalized caller turn."""
+        reason = self._rules.caller_said(text)
+        if reason is not None:
+            await self._hand_off(reason)
+
+    async def _hand_off(self, reason: HandoffReason, *, tell_model: bool = True) -> None:
+        """Open a handoff (once per call), show it to the caller, and tell Maya."""
+        if not await self._services.handoffs.open(self._require_call_id(), reason):
+            return
+        label = REASON_LABELS[reason]
+        await self._send(proto.HandoffMessage(reason=reason, label=label))
+        if tell_model:
+            await self._notify_model(
+                f"This call needs a licensed human agent ({label.lower()}). Tell the caller "
+                "briefly that a licensed agent will follow up with them. Do not share any "
+                "account history."
+            )
+
+    async def _notify_model(self, text: str) -> None:
+        """Tell the model something only the backend knows. Maya then speaks about it."""
+        session = self._session
+        if session is None:
+            return  # The call is over.
+        self._latency.caller_input(time.monotonic())
+        await session.send_text(f"{SYSTEM_PREFIX} {text}")
+        await self._recorder.audit(self._call_id, "system", "system_notice.sent")
 
     async def _call_timer(self) -> proto.EndReason:
         await asyncio.sleep(self._settings.max_call_seconds)
@@ -276,6 +519,7 @@ class CallHandler:
         if text:
             self._user_turns += 1
             await self._save_message("user", "transcription", text)
+            await self._check_caller(text)
 
     async def _finish_reply(self, *, interrupted: bool) -> None:
         text = "".join(self._reply).strip()
@@ -285,13 +529,24 @@ class CallHandler:
         self._reply_latency_ms = None
         self._latency.reply_finished()
         if text:
-            await self._save_message(
+            message_id = await self._save_message(
                 "assistant",
                 "transcription",
                 text,
                 interrupted=interrupted,
                 latency_ms=latency_ms,
             )
+            await self._monitor_reply(text, message_id)
+
+    async def _monitor_reply(self, text: str, message_id: int) -> None:
+        """The policy monitor. The words already played, so log, flag, and correct."""
+        violations = check_reply(text, booking_confirmed=self._booking_confirmed)
+        for violation in violations:
+            await self._recorder.record_policy_event(
+                self._require_call_id(), message_id=message_id, violation=violation
+            )
+        if violations:
+            await self._notify_model(correction_notice(violations))
 
     async def _save_message(
         self,
@@ -301,7 +556,7 @@ class CallHandler:
         *,
         interrupted: bool = False,
         latency_ms: int | None = None,
-    ) -> None:
+    ) -> int:
         self._seq += 1
         seq = self._seq
         message_id = await self._recorder.add_message(
@@ -323,6 +578,7 @@ class CallHandler:
                 latency_ms=latency_ms,
             )
         )
+        return message_id
 
     async def _flush_usage(self) -> None:
         delta = self._usage.take()
@@ -343,6 +599,7 @@ class CallHandler:
 
     async def _finish(self, reason: proto.EndReason) -> None:
         call_id = self._require_call_id()
+        self._session = None  # Closed: nothing more can be sent to the model.
         try:
             # Keep whatever was said when the call ended.
             await self._finish_caller_turn()
@@ -350,6 +607,11 @@ class CallHandler:
             delta = self._usage.take()
             if delta is not None:
                 await self._recorder.add_usage(call_id, delta)
+            # A ticket nobody answered can no longer be approved.
+            for approval_id in await self._approvals.expire_pending(call_id):
+                await self._send(
+                    proto.ApprovalResolvedMessage(approval_id=approval_id, status="expired")
+                )
         except Exception:
             log.exception("Call %s: could not save the final turn", call_id)
         await self._recorder.end_call(
@@ -440,3 +702,18 @@ class CallHandler:
         if self._call_id is None:
             raise RuntimeError("call has not started")
         return self._call_id
+
+    def _require_tools(self) -> ToolExecutor:
+        if self._tools is None:
+            raise RuntimeError("call has not started")
+        return self._tools
+
+
+def _ticket(approval: Approval) -> proto.ApprovalRequested:
+    ticket = BookingTicket.model_validate(approval.ticket)
+    return proto.ApprovalRequested(
+        approval_id=approval.id,
+        action=ticket.action,
+        rows=[proto.TicketRow(label=label, value=value) for label, value in ticket.display_rows()],
+        expires_at=approval.expires_at,
+    )

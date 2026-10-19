@@ -1,7 +1,8 @@
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
+from dataclasses import dataclass
 from types import TracebackType
-from typing import Self
+from typing import Any, Self
 
 from app.live.events import LiveEvent
 
@@ -23,6 +24,22 @@ class LiveConfigError(LiveSessionError):
     def __init__(self, message: str, *, caller_message: str | None = None) -> None:
         super().__init__(message)
         self.caller_message = caller_message
+
+
+@dataclass(frozen=True)
+class FunctionSpec:
+    """A function the model may call: its name, description and JSON schema of arguments."""
+
+    name: str
+    description: str
+    parameters: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ToolResponse:
+    id: str  # The FunctionCall id this answers.
+    name: str
+    response: dict[str, Any]
 
 
 class LiveSession(ABC):
@@ -48,6 +65,10 @@ class LiveSession(ABC):
     @abstractmethod
     async def send_audio(self, pcm: bytes) -> None:
         """Stream caller audio: 16-bit PCM, 16 kHz, mono."""
+
+    @abstractmethod
+    async def send_tool_responses(self, responses: Sequence[ToolResponse]) -> None:
+        """Answer the model's function calls."""
 
     @abstractmethod
     def events(self) -> AsyncIterator[LiveEvent]: ...

@@ -1,7 +1,9 @@
 "use client";
 
 import {
+  CircleCheck,
   Headphones,
+  Info,
   LoaderCircle,
   Phone,
   PhoneOff,
@@ -10,9 +12,12 @@ import {
 } from "lucide-react";
 import { type FormEvent, useEffect, useState } from "react";
 
+import { ApprovalTicket } from "@/components/call/approval-ticket";
+import { CircuitTimeline } from "@/components/call/circuit-timeline";
 import { ConsentBanner } from "@/components/call/consent-banner";
 import { type MayaStatus, StatusPill } from "@/components/call/status-pill";
 import { Transcript } from "@/components/call/transcript";
+import { VerificationCard } from "@/components/call/verification-card";
 import { Waveform } from "@/components/call/waveform";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -61,12 +66,26 @@ function formatDuration(totalSeconds: number): string {
 
 function mayaStatus(state: CallState): MayaStatus {
   if (state.phase === "connecting") return "Connecting";
+  if (state.ticket) return "Needs your OK";
+  if (state.outcome) return state.outcome.booked ? "Booked" : "Not booked";
   if (state.phase === "active") return isSpeaking(state) ? "Speaking" : "Listening";
   return "Ready";
 }
 
 export function CallConsole() {
-  const { state, start, sendText, end, getAnalysers } = useCall();
+  const {
+    state,
+    start,
+    sendText,
+    end,
+    decide,
+    openVerification,
+    closeVerification,
+    startVerification,
+    checkCode,
+    deleteMyData,
+    getAnalysers,
+  } = useCall();
   const [engine, setEngine] = useState<Engine>("gemini");
   const [mode, setMode] = useState<InputMode>("audio");
   const [consented, setConsented] = useState(false);
@@ -170,6 +189,11 @@ export function CallConsole() {
                 {state.phase === "connecting" ? "Connecting" : "End call"}
               </Button>
               {state.inputMode === "audio" && <HeadphonesTip />}
+              {state.phase === "active" && !state.verification && (
+                <Button variant="link" className="sm:ml-auto" onClick={openVerification}>
+                  I&rsquo;ve called before
+                </Button>
+              )}
             </div>
           ) : (
             <div className="flex flex-col gap-4">
@@ -204,6 +228,54 @@ export function CallConsole() {
                 )}
               </div>
             </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {state.handoff && (
+        <Alert className="border-warning/50">
+          <Info aria-hidden className="text-warning" />
+          <AlertDescription className="text-foreground">
+            A licensed agent has been asked to take over ({state.handoff.label.toLowerCase()}).
+            They will follow up with you.
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {state.verification && (
+        <VerificationCard
+          verification={state.verification}
+          onSendCode={(email) => void startVerification(email)}
+          onCheckCode={(code) => void checkCode(code)}
+          onDeleteData={() => void deleteMyData()}
+          onClose={closeVerification}
+        />
+      )}
+
+      {state.ticket && (
+        <ApprovalTicket
+          ticket={state.ticket}
+          onDecide={(approvalId, decision) => void decide(approvalId, decision)}
+        />
+      )}
+
+      <Card>
+        <CardHeader>
+          <CardTitle>What Maya is doing</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <CircuitTimeline circuit={state.circuit} lastAction={state.lastAction} />
+          {state.outcome && (
+            <Alert
+              className={cn(
+                state.outcome.booked
+                  ? "border-success/40 text-success"
+                  : "border-destructive/40 text-destructive",
+              )}
+            >
+              {state.outcome.booked ? <CircleCheck aria-hidden /> : <TriangleAlert aria-hidden />}
+              <AlertDescription className="text-foreground">{state.outcome.summary}</AlertDescription>
+            </Alert>
           )}
         </CardContent>
       </Card>

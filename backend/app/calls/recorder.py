@@ -2,16 +2,20 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, not_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.calls.usage import UsageDelta
-from app.models import AuditLog, Call, Message, UsageLog
+from app.models import AuditLog, Call, Message, PolicyEvent, ToolCall, UsageLog
+from app.safety.policy import Violation
 
 Actor = Literal["caller", "model", "system", "team"]
 
 # Serializes the daily-cap check across concurrent call starts.
 _DAILY_CAP_LOCK_KEY = 7_301_001
+
+# Scripted evaluation calls: no API quota, so not counted toward the daily cap.
+OFFLINE_EVALUATION = and_(Call.purpose == "evaluation", Call.engine == "fake")
 
 
 def start_of_today() -> datetime:
@@ -26,15 +30,28 @@ class CallRecorder:
         self._sessionmaker = sessionmaker
 
     async def start_call(
-        self, *, engine: str, input_mode: str, model: str | None, daily_cap: int
+        self,
+        *,
+        engine: str,
+        input_mode: str,
+        model: str | None,
+        daily_cap: int,
+        purpose: str = "live",
     ) -> uuid.UUID | None:
-        """Create the call row, or return None if the daily cap is already reached."""
+        """Create the call row, or return None if the daily cap is already reached.
+
+        Offline evaluation calls use no API quota, so they neither count toward the cap nor
+        get refused by it.
+        """
         async with self._sessionmaker() as db, db.begin():
             await db.execute(select(func.pg_advisory_xact_lock(_DAILY_CAP_LOCK_KEY)))
             calls_today = await db.scalar(
-                select(func.count()).select_from(Call).where(Call.started_at >= start_of_today())
+                select(func.count())
+                .select_from(Call)
+                .where(Call.started_at >= start_of_today(), not_(OFFLINE_EVALUATION))
             )
-            if (calls_today or 0) >= daily_cap:
+            capped = not (purpose == "evaluation" and engine == "fake")
+            if capped and (calls_today or 0) >= daily_cap:
                 db.add(
                     AuditLog(
                         actor="system",
@@ -47,7 +64,7 @@ class CallRecorder:
                     )
                 )
                 return None
-            call = Call(engine=engine, input_mode=input_mode, model=model)
+            call = Call(engine=engine, input_mode=input_mode, model=model, purpose=purpose)
             db.add(call)
             await db.flush()
             db.add(
@@ -55,7 +72,12 @@ class CallRecorder:
                     call_id=call.id,
                     actor="caller",
                     event="call.started",
-                    payload={"engine": engine, "input_mode": input_mode, "model": model},
+                    payload={
+                        "engine": engine,
+                        "input_mode": input_mode,
+                        "model": model,
+                        "purpose": purpose,
+                    },
                 )
             )
             return call.id
@@ -98,6 +120,69 @@ class CallRecorder:
                 )
             )
             return message.id
+
+    async def record_tool_call(
+        self,
+        call_id: uuid.UUID,
+        *,
+        provider_call_id: str,
+        name: str,
+        args: dict[str, Any],
+        result: dict[str, Any],
+        ok: bool,
+        duration_ms: int,
+    ) -> None:
+        async with self._sessionmaker() as db, db.begin():
+            row = ToolCall(
+                call_id=call_id,
+                provider_call_id=provider_call_id or None,
+                name=name,
+                args=args,
+                result=result,
+                status="ok" if ok else "error",
+                duration_ms=duration_ms,
+            )
+            db.add(row)
+            await db.flush()
+            db.add(
+                AuditLog(
+                    call_id=call_id,
+                    actor="model",
+                    event="tool.called",
+                    payload={
+                        "tool_call_id": row.id,
+                        "name": name,
+                        "status": row.status,
+                        "duration_ms": duration_ms,
+                    },
+                )
+            )
+
+    async def record_policy_event(
+        self, call_id: uuid.UUID, *, message_id: int | None, violation: Violation
+    ) -> None:
+        async with self._sessionmaker() as db, db.begin():
+            event = PolicyEvent(
+                call_id=call_id,
+                message_id=message_id,
+                rule=violation.rule,
+                excerpt=violation.excerpt,
+            )
+            db.add(event)
+            await db.flush()
+            await db.execute(update(Call).where(Call.id == call_id).values(flagged=True))
+            db.add(
+                AuditLog(
+                    call_id=call_id,
+                    actor="system",
+                    event="policy.violation",
+                    payload={
+                        "policy_event_id": event.id,
+                        "rule": violation.rule,
+                        "message_id": message_id,
+                    },
+                )
+            )
 
     async def add_usage(self, call_id: uuid.UUID, delta: UsageDelta) -> None:
         async with self._sessionmaker() as db, db.begin():

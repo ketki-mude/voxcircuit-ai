@@ -2,6 +2,7 @@ from fastapi import APIRouter, WebSocket, status
 
 from app.calls.handler import CallHandler
 from app.calls.recorder import CallRecorder
+from app.calls.services import CallServices
 from app.config import Settings
 
 router = APIRouter()
@@ -20,10 +21,20 @@ async def ws_call(websocket: WebSocket) -> None:
     if not origin_allowed(websocket.headers.get("origin"), settings):
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
+    state = websocket.app.state
     handler = CallHandler(
         websocket=websocket,
         settings=settings,
-        recorder=CallRecorder(websocket.app.state.sessionmaker),
-        session_factory=websocket.app.state.live_session_factory,
+        services=CallServices(
+            sessionmaker=state.sessionmaker,
+            recorder=CallRecorder(state.sessionmaker),
+            calendar=state.calendar,
+            approvals=state.approvals,
+            registry=state.registry,
+            tokens=state.caller_tokens,
+            handoffs=state.handoffs,
+            verification=state.verification,
+        ),
+        session_factory=state.live_session_factory,
     )
     await handler.run()

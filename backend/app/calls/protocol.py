@@ -5,12 +5,16 @@ JSON text frames carry the messages below. In an audio call, binary frames carry
 audio at 24 kHz (server to client).
 """
 
+from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter
 
+from app.booking.schemas import Action, StepReport
 from app.live.factory import EngineName, InputMode
+from app.safety.handoff import HandoffReason
+from app.verification.types import CheckStatus
 
 MAX_USER_TEXT_CHARS = 1000
 MAX_AUDIO_FRAME_BYTES = 32_000  # One second of 16 kHz caller audio.
@@ -24,6 +28,7 @@ EndReason = Literal[
     "daily_cap",
     "quota",
     "error",
+    "handed_off",
 ]
 ErrorCode = Literal["invalid_message", "consent_required", "not_configured"]
 
@@ -67,6 +72,7 @@ class CallStarted(BaseModel):
     engine: EngineName
     max_call_seconds: int
     max_turns: int
+    session_token: str  # Bearer token for this call's REST endpoints (approvals).
 
 
 class UserDelta(BaseModel):
@@ -111,6 +117,76 @@ class TurnCompleted(BaseModel):
     latency_ms: int | None
 
 
+class ToolEvent(BaseModel):
+    """The backend ran one of the model's tools. Drives the circuit timeline."""
+
+    type: Literal["tool"] = "tool"
+    name: str
+    ok: bool
+    summary: str  # No personal details.
+
+
+class TicketRow(BaseModel):
+    label: str
+    value: str
+
+
+class ApprovalRequested(BaseModel):
+    """Show the caller a booking ticket to approve or cancel."""
+
+    type: Literal["approval_requested"] = "approval_requested"
+    approval_id: UUID
+    action: Action
+    rows: list[TicketRow]
+    expires_at: datetime
+
+
+class ApprovalResolvedMessage(BaseModel):
+    type: Literal["approval_resolved"] = "approval_resolved"
+    approval_id: UUID
+    status: Literal["approved", "cancelled", "expired"]
+
+
+class BookingResult(BaseModel):
+    type: Literal["booking_result"] = "booking_result"
+    approval_id: UUID
+    success: bool
+    summary: str
+    steps: list[StepReport]
+
+
+class VerificationStartedMessage(BaseModel):
+    """Demo only: the code a real system would text to the caller's phone."""
+
+    type: Literal["verification_started"] = "verification_started"
+    challenge_id: UUID
+    masked_email: str
+    demo_code: str
+    expires_at: datetime
+
+
+class VerificationResultMessage(BaseModel):
+    type: Literal["verification_result"] = "verification_result"
+    status: CheckStatus
+    attempts_left: int
+    returning_customer: bool
+
+
+class HandoffMessage(BaseModel):
+    type: Literal["handoff"] = "handoff"
+    reason: HandoffReason
+    label: str
+
+
+class DataDeletedMessage(BaseModel):
+    type: Literal["data_deleted"] = "data_deleted"
+
+
+class HandoffTakenMessage(BaseModel):
+    type: Literal["handoff_taken"] = "handoff_taken"
+    agent_name: str
+
+
 class UsageUpdate(BaseModel):
     type: Literal["usage"] = "usage"
     elapsed_seconds: float
@@ -141,6 +217,15 @@ ServerMessage = (
     | InterruptedNotice
     | TurnCompleted
     | UsageUpdate
+    | ToolEvent
+    | ApprovalRequested
+    | ApprovalResolvedMessage
+    | BookingResult
+    | VerificationStartedMessage
+    | VerificationResultMessage
+    | HandoffMessage
+    | DataDeletedMessage
+    | HandoffTakenMessage
     | CallEnded
     | ErrorNotice
 )

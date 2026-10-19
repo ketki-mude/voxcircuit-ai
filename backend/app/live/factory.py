@@ -1,13 +1,15 @@
 from collections.abc import Callable
+from datetime import datetime
 from typing import Literal
 
 from google import genai
 
 from app.config import Settings
-from app.live.base import LiveConfigError, LiveSession
+from app.live.base import FunctionSpec, LiveConfigError, LiveSession
 from app.live.fake import FakeLiveSession
 from app.live.gemini import GeminiLiveSession
-from app.prompts import MAYA_SYSTEM_INSTRUCTION
+from app.prompts import build_system_instruction
+from app.tools.specs import TOOL_SPECS
 
 EngineName = Literal["gemini", "fake"]
 InputMode = Literal["text", "audio"]
@@ -37,8 +39,18 @@ def default_live_session_factory(settings: Settings) -> LiveSessionFactory:
         return GeminiLiveSession(
             client=client,
             model=settings.gemini_live_model,
-            system_instruction=MAYA_SYSTEM_INSTRUCTION,
+            system_instruction=build_system_instruction(
+                datetime.now(settings.timezone).date(), settings.business_timezone
+            ),
             silence_duration_ms=settings.vad_silence_duration_ms,
+            functions=function_specs(),
         )
 
     return make
+
+
+def function_specs() -> list[FunctionSpec]:
+    return [
+        FunctionSpec(name=t.name, description=t.description, parameters=t.parameters_schema())
+        for t in TOOL_SPECS
+    ]
