@@ -1,4 +1,4 @@
-"""HubSpot CRM through a private app token.
+"""HubSpot CRM through a service key or legacy private app token (both are Bearer tokens).
 
 Contacts are upserted with email as the id property, so a retry lands on the same
 contact with the same values: the upsert is idempotent by nature, and HubSpot has no

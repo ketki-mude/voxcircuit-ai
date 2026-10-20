@@ -219,13 +219,22 @@ no prices or coverage advice, hands off a claim, and books after approval.
 backend refuses to start if any setting below is missing. Use a test HubSpot account and a
 dedicated test calendar, with fake details only.
 
-### HubSpot (private app token)
+### HubSpot (service key)
+
+HubSpot has replaced new private apps with **service keys**. Both are sent the same way
+(`Authorization: Bearer pat-…`), so either works in `HUBSPOT_PRIVATE_APP_TOKEN`.
 
 1. In a HubSpot account where you are a super admin (a free account works), open
-   **Development > Legacy apps > Create legacy app > Private**.
-2. On **Scopes**, add `crm.objects.contacts.read` and `crm.objects.contacts.write`.
-3. Create the app, open its **Auth** tab, click **Show token**, and copy it into
-   `backend/.env` as `HUBSPOT_PRIVATE_APP_TOKEN`.
+   **Development > Keys > Service keys** and click **Create service key**.
+   (On the **Legacy apps** page, the **Create a service key** button leads to the same place.)
+2. Name it (for example "VoxCircuit test"). Click **Add new scope**, tick
+   `crm.objects.contacts.read` and `crm.objects.contacts.write`, click **Update**, then
+   **Create**.
+3. Open the key, click **Show**, then **Copy**, and paste it into `backend/.env` as
+   `HUBSPOT_PRIVATE_APP_TOKEN`. It starts with `pat-`.
+
+HubSpot suggests rotating service keys every six months (**Rotate and expire later**
+gives 7 days of overlap).
 
 How it is used (`backend/app/integrations/hubspot.py`):
 
@@ -239,12 +248,18 @@ How it is used (`backend/app/integrations/hubspot.py`):
 
 ### Google Calendar (OAuth 2.0)
 
-1. In [Google Cloud Console](https://console.cloud.google.com/), create a project and enable
-   the **Google Calendar API**. No billing is needed.
-2. Configure the **OAuth consent screen**: user type **External**, publishing status
-   **Testing**, and add your Google account as a **test user**.
-3. Create an **OAuth client ID** of type **Desktop app**. Put its client ID and secret in
-   `backend/.env` as `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET`.
+Use a personal Google account; school or work accounts often block Cloud projects.
+
+1. In [Google Cloud Console](https://console.cloud.google.com/), create a project, then open
+   **APIs & Services > Library**, find **Google Calendar API** and click **Enable**. No billing
+   is needed.
+2. Open **Google Auth platform > Branding** and click **Get started**: enter an app name and
+   your email, choose audience **External**, enter a contact email, agree to the policy, and
+   click **Create**. Then under **Google Auth platform > Audience**, leave publishing status
+   on **Testing** and add your Google account under **Test users**.
+3. Under **Google Auth platform > Clients**, click **Create client**, choose **Desktop app**,
+   and click **Create**. Put its client ID and secret in `backend/.env` as
+   `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET`. No JSON file is needed.
 4. In Google Calendar, create a new calendar (for example "VoxCircuit test"). In its
    settings under **Integrate calendar**, copy the **Calendar ID** into `GOOGLE_CALENDAR_ID`.
 5. Run the one-time sign-in, approve access in the browser, and paste the printed line into
@@ -316,7 +331,7 @@ Backend settings come from environment variables or `backend/.env`
 | `INTEGRATIONS_MODE` | `mock` | `mock` or `live` (HubSpot and Google Calendar) |
 | `BUSINESS_TIMEZONE` | `America/New_York` | Consultations are weekdays 9:00 to 17:00 in this time zone |
 | `APPROVAL_TTL_SECONDS` | `300` | A booking ticket expires after this long |
-| `HUBSPOT_PRIVATE_APP_TOKEN` | empty | Live mode: HubSpot private app token |
+| `HUBSPOT_PRIVATE_APP_TOKEN` | empty | Live mode: HubSpot service key (or legacy private app token) |
 | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` | empty | Live mode: Desktop app OAuth client |
 | `GOOGLE_OAUTH_REFRESH_TOKEN` | empty | Live mode: from `python -m app.integrations.google_oauth` |
 | `GOOGLE_CALENDAR_ID` | empty | Live mode: the dedicated test calendar |

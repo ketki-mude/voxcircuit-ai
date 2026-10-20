@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     business_timezone: str = "America/New_York"
     approval_ttl_seconds: int = Field(default=300, ge=10)
 
-    # INTEGRATIONS_MODE=live: HubSpot (private app token) and Google Calendar (OAuth).
+    # INTEGRATIONS_MODE=live: HubSpot (service key) and Google Calendar (OAuth).
     hubspot_private_app_token: SecretStr | None = None
     google_oauth_client_id: str | None = None
     google_oauth_client_secret: SecretStr | None = None
