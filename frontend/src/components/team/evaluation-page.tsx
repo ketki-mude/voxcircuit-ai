@@ -129,7 +129,7 @@ export function EvaluationPage() {
               value={
                 run.latency_p50_ms === null
                   ? null
-                  : `${formatMs(run.latency_p50_ms)} / ${formatMs(run.latency_p95_ms)}`
+                  : `${run.latency_p50_ms.toLocaleString()} / ${formatMs(run.latency_p95_ms)}`
               }
               note={run.mode === "scripted" ? "Scripted replies are instant" : undefined}
             />

@@ -47,10 +47,11 @@ export function CallDetailPage() {
             {data.call.purpose === "evaluation" && <StatusChip tone="neutral">Evaluation</StatusChip>}
           </div>
           <p className="text-sm text-muted-foreground">
-            {data.call.input_mode === "audio" ? "Voice" : "Text"} call, {data.call.engine}
-            {data.call.model ? ` (${data.call.model})` : ""}, ended{" "}
-            {data.call.end_reason?.replaceAll("_", " ") ?? "not yet"}
-            {data.call.ended_at ? ` at ${formatTime(data.call.ended_at)}` : ""}.
+            {data.call.input_mode === "audio" ? "Voice" : "Text"} call on the {data.call.engine}{" "}
+            engine{data.call.model ? ` (${data.call.model})` : ""}.{" "}
+            {data.call.ended_at
+              ? `Ended at ${formatTime(data.call.ended_at)}: ${data.call.end_reason?.replaceAll("_", " ") ?? "unknown"}.`
+              : "Not ended yet."}
           </p>
 
           <dl className="grid grid-cols-2 gap-3 lg:grid-cols-4">

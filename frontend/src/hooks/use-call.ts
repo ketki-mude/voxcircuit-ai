@@ -287,6 +287,7 @@ function onServerMessage(state: CallState, message: ServerMessage, at: number): 
       return {
         ...state,
         ticket: null,
+        lastAction: replaced ? state.lastAction : "Nothing was booked",
         circuit: replaced
           ? state.circuit
           : { ...state.circuit, approval: "skipped", booked: "skipped" },
@@ -333,8 +334,10 @@ function onServerMessage(state: CallState, message: ServerMessage, at: number): 
           approval: "done",
           booked: message.success ? "done" : "failed",
         },
+        lastAction: message.success ? "Booked and saved to CRM" : "Booking not completed",
         outcome: { booked: message.success, summary: message.summary },
-      };    case "call_ended":
+      };
+    case "call_ended":
       return {
         ...state,
         phase: "ended",
