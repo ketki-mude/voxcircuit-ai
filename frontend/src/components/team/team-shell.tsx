@@ -126,7 +126,7 @@ function SignIn() {
               Sign in
             </Button>
             <p className="text-xs text-muted-foreground">
-              Accounts are created by an admin with <code>python -m app.cli create-user</code>.
+              Need access? Ask your team administrator.
             </p>
           </form>
         </CardContent>

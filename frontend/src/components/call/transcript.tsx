@@ -1,5 +1,6 @@
 "use client";
 
+import { MessagesSquare } from "lucide-react";
 import { type ReactNode, useEffect, useRef } from "react";
 
 import type { TranscriptEntry } from "@/hooks/use-call";
@@ -22,9 +23,11 @@ export function Transcript({ messages, draft, userDraft }: TranscriptProps) {
 
   if (messages.length === 0 && !draft && !userDraft) {
     return (
-      <p className="py-10 text-center text-sm text-muted-foreground">
-        The conversation will appear here.
-      </p>
+      <div className="flex h-full flex-col items-center justify-center gap-2 py-10 text-center">
+        <MessagesSquare aria-hidden className="size-8 text-muted-foreground/60" />
+        <p className="text-sm font-medium">Your conversation will appear here</p>
+        <p className="text-sm text-muted-foreground">Start a call, or type a message below.</p>
+      </div>
     );
   }
 
@@ -65,19 +68,19 @@ function Bubble({
 }) {
   const isUser = role === "user";
   return (
-    <li className={cn("flex flex-col gap-1", isUser ? "items-end" : "items-start")}>
-      <span className="text-xs text-muted-foreground">{isUser ? "You" : "Maya"}</span>
-      <p
-        className={cn(
-          "max-w-[85%] rounded-2xl px-3.5 py-2 text-sm leading-relaxed whitespace-pre-wrap",
-          isUser
-            ? "rounded-br-sm bg-primary text-primary-foreground"
-            : "rounded-bl-sm bg-muted text-foreground",
-          streaming && "opacity-80",
-        )}
+    <li
+      className={cn(
+        "flex flex-col gap-1 rounded-xl px-4 py-3",
+        isUser ? "bg-accent" : "bg-muted",
+        streaming && "opacity-80",
+      )}
+    >
+      <span
+        className={cn("text-xs font-medium", isUser ? "text-primary" : "text-muted-foreground")}
       >
-        {children}
-      </p>
+        {isUser ? "You" : "Maya"}
+      </span>
+      <p className="text-sm leading-relaxed whitespace-pre-wrap text-foreground">{children}</p>
       {interrupted && <span className="text-xs text-muted-foreground">Interrupted</span>}
     </li>
   );

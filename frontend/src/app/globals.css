@@ -29,6 +29,10 @@
   --color-destructive: var(--destructive);
   --color-success: var(--success);
   --color-warning: var(--warning);
+  --color-hero: var(--hero);
+  --color-hero-foreground: var(--hero-foreground);
+  --color-hero-muted: var(--hero-muted);
+  --color-wave: var(--wave);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
@@ -69,6 +73,11 @@
   --destructive: oklch(0.55 0.21 27);
   --success: oklch(0.5 0.13 152);
   --warning: oklch(0.56 0.13 65);
+  /* Welcome banner and voice waveform. */
+  --hero: oklch(0.29 0.075 264);
+  --hero-foreground: oklch(0.985 0.004 255);
+  --hero-muted: oklch(0.8 0.05 262);
+  --wave: oklch(0.58 0.14 272);
   --border: oklch(0.9 0.012 258);
   --input: oklch(0.88 0.014 258);
   --ring: oklch(0.55 0.12 262);
@@ -107,6 +116,10 @@
     --destructive: oklch(0.7 0.17 25);
     --success: oklch(0.76 0.15 152);
     --warning: oklch(0.8 0.14 75);
+    --hero: oklch(0.26 0.05 264);
+    --hero-foreground: oklch(0.96 0.006 255);
+    --hero-muted: oklch(0.78 0.05 262);
+    --wave: oklch(0.74 0.11 272);
     --border: oklch(1 0 0 / 11%);
     --input: oklch(1 0 0 / 16%);
     --ring: oklch(0.7 0.1 258);

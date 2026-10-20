@@ -1,6 +1,7 @@
 "use client";
 
 import { Check, LoaderCircle, X } from "lucide-react";
+import { useEffect, useRef } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -19,12 +20,20 @@ interface ApprovalTicketProps {
 }
 
 export function ApprovalTicket({ ticket, onDecide }: ApprovalTicketProps) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    ref.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [ticket.approvalId]);
   const expires = new Date(ticket.expiresAt).toLocaleTimeString([], {
     hour: "numeric",
     minute: "2-digit",
   });
   return (
-    <Card aria-label="Booking ticket" className="border-warning/50 ring-1 ring-warning/30">
+    <Card
+      ref={ref}
+      aria-label="Booking ticket"
+      className="scroll-mt-4 border-warning/50 ring-1 ring-warning/30"
+    >
       <CardHeader>
         <CardTitle>
           {ticket.action === "reschedule" ? "Review before I reschedule" : "Review before I book"}

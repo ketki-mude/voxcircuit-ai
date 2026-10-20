@@ -49,7 +49,8 @@ audit log that can't be edited.
 
 ## What it looks like
 
-**1. Start a call.** Tick the consent box, choose voice or text, and press Start call.
+**1. Start a call.** Tick the consent box, then press **Start call** to talk, or type in
+the conversation box to chat by text.
 
 ![Customer view before a call](docs/images/1-customer-start.png)
 
@@ -265,9 +266,10 @@ push (`.github/workflows/ci.yml`).
 
 ## Things to try
 
-Choose **Gemini Live** for a real conversation. **Offline test** only plays a short scripted
-intake with no network. Use **headphones** for voice calls, or Maya may hear herself and
-stop talking.
+Keep **Model** (at the bottom of Maya's card) on **Gemini Live** for a real conversation.
+**Offline test** only plays a short scripted text intake with no network. Press **Start
+call** to talk, or type a message to chat. Use **headphones** for voice calls, or Maya may
+hear herself and stop talking.
 
 | Say this | What should happen |
 | --- | --- |

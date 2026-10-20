@@ -5,74 +5,91 @@ import { useEffect, useRef } from "react";
 import type { Analysers } from "@/hooks/use-call";
 import { cn } from "@/lib/utils";
 
+export type WaveSource = "idle" | "mic" | "maya";
+
 interface WaveformProps {
   getAnalysers: () => Analysers;
-  /** Show Maya's audio when she is speaking, otherwise the caller's microphone. */
-  speaking: boolean;
+  /** Whose audio to draw: nobody (a still pattern), the caller's microphone, or Maya. */
+  source: WaveSource;
 }
 
+// The still pattern, also the floor the live bars never drop below. Symmetric, peaking in the middle.
+const RESTING = [
+  0.16, 0.22, 0.34, 0.5, 0.7, 0.46, 0.32, 0.56, 0.82, 0.6, 0.4, 0.72, 0.95, 0.72, 0.4, 0.6, 0.82,
+  0.56, 0.32, 0.46, 0.7, 0.5, 0.34, 0.22, 0.16,
+];
+const FLOOR = 0.08;
 // Microphone audio is much quieter than Maya's, so it is drawn with more gain.
-const GAIN = { mic: 4, player: 1.5 };
+const GAIN = { mic: 9, maya: 4 };
 
-export function Waveform({ getAnalysers, speaking }: WaveformProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+export function Waveform({ getAnalysers, source }: WaveformProps) {
+  const barsRef = useRef<(HTMLSpanElement | null)[]>([]);
 
   useEffect(() => {
-    const canvas = canvasRef.current;
-    const context = canvas?.getContext("2d");
-    if (!canvas || !context) return;
-    const color = getComputedStyle(canvas).color;
-    const samples = new Float32Array(1024);
+    const bars = barsRef.current;
+    const setHeights = (heights: number[]) =>
+      bars.forEach((bar, i) => {
+        if (bar) bar.style.height = `${Math.round(heights[i] * 100)}%`;
+      });
+
+    if (source === "idle") {
+      setHeights(RESTING);
+      return;
+    }
+
+    const samples = new Float32Array(2048);
+    const shown = RESTING.map(() => FLOOR);
     let frame = 0;
-
     const draw = () => {
-      const ratio = window.devicePixelRatio || 1;
-      const width = canvas.clientWidth;
-      const height = canvas.clientHeight;
-      if (canvas.width !== Math.round(width * ratio)) canvas.width = Math.round(width * ratio);
-      if (canvas.height !== Math.round(height * ratio)) canvas.height = Math.round(height * ratio);
-      context.setTransform(ratio, 0, 0, ratio, 0, 0);
-      context.clearRect(0, 0, width, height);
-      context.strokeStyle = color;
-      context.lineWidth = 2;
-      context.lineJoin = "round";
-      context.beginPath();
-
       const analysers = getAnalysers();
-      const analyser = speaking ? analysers.player : analysers.mic;
-      const middle = height / 2;
+      const analyser = source === "maya" ? analysers.player : analysers.mic;
       if (analyser) {
         const count = Math.min(analyser.fftSize, samples.length);
         const view = samples.subarray(0, count);
         analyser.getFloatTimeDomainData(view);
-        const gain = speaking ? GAIN.player : GAIN.mic;
-        for (let i = 0; i < count; i++) {
-          const x = (i / (count - 1)) * width;
-          const y = middle - Math.max(-1, Math.min(1, view[i] * gain)) * middle * 0.9;
-          if (i === 0) context.moveTo(x, y);
-          else context.lineTo(x, y);
-        }
-      } else {
-        context.moveTo(0, middle);
-        context.lineTo(width, middle);
+        const size = Math.floor(count / RESTING.length);
+        const gain = source === "maya" ? GAIN.maya : GAIN.mic;
+        RESTING.forEach((shape, i) => {
+          let sum = 0;
+          for (let j = i * size; j < (i + 1) * size; j++) sum += view[j] * view[j];
+          const level = Math.min(1, Math.sqrt(sum / size) * gain);
+          // Shape each bar like the resting pattern, rise fast and fall slowly.
+          const target = Math.max(FLOOR, level * (0.45 + 0.55 * shape));
+          shown[i] = target > shown[i] ? target : shown[i] * 0.88 + target * 0.12;
+        });
       }
-      context.stroke();
+      setHeights(shown);
       frame = requestAnimationFrame(draw);
     };
-
     frame = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(frame);
-  }, [getAnalysers, speaking]);
+  }, [getAnalysers, source]);
 
   return (
-    <canvas
-      ref={canvasRef}
+    <div
       role="img"
-      aria-label={speaking ? "Waveform of Maya's voice" : "Waveform of your microphone"}
-      className={cn(
-        "h-14 w-full rounded-lg bg-muted",
-        speaking ? "text-primary" : "text-muted-foreground",
-      )}
-    />
+      aria-label={
+        source === "maya"
+          ? "Waveform of Maya's voice"
+          : source === "mic"
+            ? "Waveform of your microphone"
+            : "Voice waveform"
+      }
+      className="flex h-36 items-center justify-center gap-1.5 sm:h-44"
+    >
+      {RESTING.map((height, i) => (
+        <span
+          key={i}
+          ref={(bar) => {
+            barsRef.current[i] = bar;
+          }}
+          style={{ height: `${Math.round(height * 100)}%` }}
+          className={cn(
+            "w-1.5 rounded-full transition-[height] duration-75 ease-out sm:w-2",
+            source === "maya" ? "bg-wave" : source === "mic" ? "bg-wave/75" : "bg-wave/45",
+          )}
+        />
+      ))}
+    </div>
   );
 }
