@@ -1,65 +1,189 @@
 "use client";
 
-import { LoaderCircle, ShieldCheck, UserRoundCheck } from "lucide-react";
+import { LoaderCircle, Phone, PhoneOff, Settings2, ShieldCheck, UserRoundCheck } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 
-import { Meter, StatTile } from "@/components/team/figures";
+import { CollapsibleRule } from "@/components/team/collapsible-rule";
+import { Meter } from "@/components/team/figures";
+import { MetricCell, MetricStrip } from "@/components/team/metric-cell";
+import { ErrorState, Skeleton } from "@/components/team/page-states";
+import { Panel } from "@/components/team/panel";
+import { StatusBar } from "@/components/team/status-bar";
 import { StatusChip } from "@/components/team/status-chip";
-import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useTeamResource, useTeamSession } from "@/hooks/use-team-session";
-import { formatCount, formatMs, formatTime, formatUsd } from "@/lib/format";
+import { useNow } from "@/lib/clock";
+import {
+  formatCount,
+  formatElapsed,
+  formatExact,
+  formatMinutes,
+  formatMs,
+  formatUsd,
+  plural,
+} from "@/lib/format";
 import { type HandoffRow, type Summary, hasRole } from "@/lib/team-api";
 
-const GUARDRAILS = [
+type Settings = Summary["settings"];
+type Resource<T> = { data: T | null; error: string | null; reload: () => void };
+
+// What the backend enforces, described in words. Numbers come from the summary's settings.
+const RULES: { title: string; detail: (settings: Settings | null) => string }[] = [
   {
     title: "Nothing is booked without the caller's OK",
-    detail: "request_booking only creates a pending ticket. The backend books after Approve.",
+    detail: (s) =>
+      `request_booking only creates a pending ticket${
+        s ? `, which expires after ${s.approval_ttl_seconds.toLocaleString()} s` : ""
+      }. The backend books only after the caller presses Approve.`,
   },
   {
     title: "Every write has an idempotency key",
-    detail: "CRM and calendar steps are recorded with unique keys, so a retry never duplicates.",
+    detail: () =>
+      "CRM and calendar steps are recorded with unique keys, so a retry never creates a duplicate.",
   },
   {
     title: "No prices, coverage advice or approval promises",
-    detail: "The policy monitor checks every reply, flags the call, and has Maya correct herself.",
+    detail: () =>
+      "The policy monitor checks every reply, flags the call, and has Maya correct herself. " +
+      "Speech can't be blocked before it plays, so policy violations are detected, flagged, " +
+      "and corrected.",
   },
   {
     title: "Only real bookings are announced",
-    detail: "A claim of a booking without a confirmed result is flagged and corrected.",
+    detail: () => "A claim of a booking without a confirmed result is flagged and corrected.",
   },
   {
     title: "Sensitive details are refused",
-    detail: "Tool schemas reject license, SSN, VIN, payment card and date-of-birth data.",
+    detail: () =>
+      "Tool schemas reject driver's license, Social Security, VIN, payment card and " +
+      "date-of-birth data.",
   },
   {
     title: "History only after verification",
-    detail: "A 6-digit code, 3 tries, 5 minutes. Only the backend marks a caller verified.",
+    detail: () =>
+      "Returning callers confirm who they are with a one-time code with limited attempts and " +
+      "a short expiry. Only the backend marks a caller verified.",
   },
   {
     title: "Hand off when it matters",
-    detail:
+    detail: () =>
       "Upset callers, claims and complaints, requests for a person, repeated out-of-scope " +
-      "requests or corrections, failing tools, failed verification, incomplete bookings.",
+      "requests or corrections, failing tools, failed verification, and incomplete bookings " +
+      "go to a person.",
   },
   {
     title: "Caps and an append-only audit log",
-    detail: "Call length, turns and calls per day are capped; the audit log rejects edits.",
+    detail: (s) =>
+      s
+        ? `Calls end after ${s.max_call_seconds.toLocaleString()} s or ` +
+          `${plural(s.max_turns, "caller turn", "caller turns")}, and at most ` +
+          `${plural(s.daily_call_cap, "call starts", "calls start")} each day. ` +
+          "The audit log rejects edits."
+        : "Call length, turns and calls per day are capped. The audit log rejects edits.",
   },
 ];
 
 export function OverviewPage() {
-  const { user, api } = useTeamSession();
   const summary = useTeamResource<Summary>("/api/control-room/summary", 10_000);
   const queue = useTeamResource<HandoffRow[]>("/api/handoffs", 5_000);
+  const metrics = summary.data?.metrics ?? null;
+  // A refresh failed but older data is still on screen.
+  const staleError = (summary.data && summary.error) || (queue.data && queue.error);
+
+  return (
+    <>
+      <h1 className="sr-only">Control room overview</h1>
+
+      {summary.data === null && summary.error ? (
+        <ErrorState
+          message={`Couldn't load today's numbers. ${summary.error}`}
+          onRetry={summary.reload}
+        />
+      ) : (
+        <MetricStrip label="Today" className="md:grid-cols-4">
+          <MetricCell
+            label="Calls today"
+            value={metrics && formatCount(metrics.calls_today)}
+            caption="live calls"
+          />
+          <MetricCell
+            label="Booked"
+            value={metrics && formatCount(metrics.booked_today)}
+            caption={metrics && `of ${plural(metrics.calls_today, "call", "calls")}`}
+          />
+          <MetricCell
+            label="Need a human"
+            value={metrics && formatCount(metrics.needs_human)}
+            caption={metrics && (metrics.needs_human === 0 ? "none waiting" : "waiting now")}
+            tone={metrics && metrics.needs_human > 0 ? "warning" : "neutral"}
+          />
+          <MetricCell
+            label="Policy flags"
+            value={metrics && formatCount(metrics.policy_flags_today)}
+            caption={metrics && (metrics.policy_flags_today === 0 ? "none today" : "today")}
+            tone={metrics && metrics.policy_flags_today > 0 ? "warning" : "neutral"}
+          />
+        </MetricStrip>
+      )}
+
+      {staleError && (
+        <ErrorState
+          compact
+          message={`Couldn't refresh. Showing the last numbers loaded. ${staleError}`}
+          onRetry={() => {
+            summary.reload();
+            queue.reload();
+          }}
+        />
+      )}
+
+      {metrics?.calls_today === 0 && (
+        <p className="text-sm text-muted-foreground">
+          No live calls yet today.{" "}
+          <Link href="/" className="underline underline-offset-4 hover:text-foreground">
+            Start one from the customer view
+          </Link>{" "}
+          to see it here.
+        </p>
+      )}
+
+      <HandoffQueue queue={queue} onChanged={summary.reload} />
+
+      <div className="grid gap-6 md:grid-cols-2 md:items-start">
+        <UsagePanel summary={summary} />
+        <GuardrailsPanel settings={summary.data?.settings ?? null} />
+      </div>
+    </>
+  );
+}
+
+function HandoffQueue({
+  queue,
+  onChanged,
+}: {
+  queue: Resource<HandoffRow[]>;
+  onChanged: () => void;
+}) {
+  const { user, api } = useTeamSession();
+  const now = useNow();
   const [takingOver, setTakingOver] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const canTakeOver = hasRole(user, "agent");
-  const metrics = summary.data?.metrics;
-  const usage = summary.data?.usage;
+  const canAct = hasRole(user, "agent");
+
+  if (queue.data === null) {
+    return queue.error ? (
+      <ErrorState
+        message={`Couldn't load the handoff queue. ${queue.error}`}
+        onRetry={queue.reload}
+      />
+    ) : (
+      <StatusBar tone="loading" title="Checking the handoff queue" />
+    );
+  }
+  if (queue.data.length === 0) {
+    return <StatusBar tone="good" title="All clear. Nobody is waiting for a human." />;
+  }
 
   async function takeOver(handoff: HandoffRow) {
     setTakingOver(handoff.id);
@@ -71,207 +195,203 @@ export function OverviewPage() {
     } finally {
       setTakingOver(null);
       queue.reload();
-      summary.reload();
+      onChanged();
     }
   }
 
   return (
-    <>
-      <h1 className="sr-only">Control room overview</h1>
-      {summary.error && (
-        <Alert variant="destructive">
-          <AlertDescription>{summary.error}</AlertDescription>
-        </Alert>
+    <StatusBar
+      tone="warning"
+      title={`${plural(queue.data.length, "call is", "calls are")} waiting for a human`}
+    >
+      {actionError && (
+        <p role="alert" className="text-sm text-destructive">
+          {actionError}
+        </p>
       )}
-
-      <dl className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <StatTile label="Calls today" value={metrics ? formatCount(metrics.calls_today) : null} />
-        <StatTile label="Booked" value={metrics ? formatCount(metrics.booked_today) : null} />
-        <StatTile
-          label="Need a human"
-          value={metrics ? formatCount(metrics.needs_human) : null}
-          note={metrics && metrics.needs_human > 0 ? "Waiting in the queue" : undefined}
-        />
-        <StatTile
-          label="Policy flags"
-          value={metrics ? formatCount(metrics.policy_flags_today) : null}
-          note="Today"
-        />
-      </dl>
-
-      <div className="grid gap-6 lg:grid-cols-[3fr_2fr]">
-        <Card>
-          <CardHeader>
-            <CardTitle>Needs a human</CardTitle>
-            <CardDescription>
-              Calls the backend handed off, oldest first.
-              {!canTakeOver && " Agents and admins can take over calls."}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-3">
-            {actionError && (
-              <Alert variant="destructive">
-                <AlertDescription>{actionError}</AlertDescription>
-              </Alert>
+      <ul
+        aria-label="Waiting for a human"
+        className="flex flex-col divide-y-[0.5px] divide-line rounded-md border-[0.5px] border-line bg-card"
+      >
+        {queue.data.map((handoff) => (
+          <li key={handoff.id} className="flex flex-wrap items-center gap-2 px-3 py-2">
+            <StatusChip tone="warning">{handoff.label}</StatusChip>
+            <StatusChip
+              tone="neutral"
+              icon={
+                handoff.call_active ? (
+                  <Phone aria-hidden className="size-3" />
+                ) : (
+                  <PhoneOff aria-hidden className="size-3" />
+                )
+              }
+            >
+              {handoff.call_active ? "Call live" : "Call ended"}
+            </StatusChip>
+            <span className="text-sm text-muted-foreground" title={formatExact(handoff.created_at)}>
+              Waiting {formatElapsed(handoff.created_at, now)}
+            </span>
+            {canAct && (
+              <div className="ml-auto flex items-center gap-3">
+                <Link
+                  href={`/control-room/calls/${handoff.call_id}`}
+                  className="rounded-md text-sm underline-offset-4 outline-none hover:underline focus-visible:ring-3 focus-visible:ring-ring/50"
+                >
+                  Open call
+                </Link>
+                <Button
+                  size="sm"
+                  disabled={takingOver !== null}
+                  onClick={() => void takeOver(handoff)}
+                >
+                  {takingOver === handoff.id ? (
+                    <LoaderCircle className="motion-safe:animate-spin" />
+                  ) : (
+                    <UserRoundCheck />
+                  )}
+                  Take over
+                </Button>
+              </div>
             )}
-            {queue.data === null ? (
-              <p className="text-sm text-muted-foreground">{queue.error ?? "Loading..."}</p>
-            ) : queue.data.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No one is waiting.</p>
-            ) : (
-              <ul className="flex flex-col divide-y">
-                {queue.data.map((handoff) => (
-                  <li
-                    key={handoff.id}
-                    className="flex flex-wrap items-center justify-between gap-3 py-3 first:pt-0"
-                  >
-                    <div className="flex flex-col gap-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <StatusChip tone="warning">{handoff.label}</StatusChip>
-                        <StatusChip tone={handoff.call_active ? "good" : "neutral"}>
-                          {handoff.call_active ? "Call live" : "Call ended"}
-                        </StatusChip>
-                      </div>
-                      <p className="text-xs text-muted-foreground">
-                        Call started {formatTime(handoff.call_started_at)}, handed off{" "}
-                        {formatTime(handoff.created_at)}
-                        {canTakeOver && (
-                          <>
-                            {" · "}
-                            <Link
-                              href={`/control-room/calls/${handoff.call_id}`}
-                              className="underline underline-offset-2 hover:text-foreground"
-                            >
-                              Open call
-                            </Link>
-                          </>
-                        )}
-                      </p>
-                    </div>
-                    <Button
-                      size="sm"
-                      disabled={!canTakeOver || takingOver !== null}
-                      onClick={() => void takeOver(handoff)}
-                    >
-                      {takingOver === handoff.id ? (
-                        <LoaderCircle className="motion-safe:animate-spin" />
-                      ) : (
-                        <UserRoundCheck />
-                      )}
-                      Take over call
-                    </Button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Usage</CardTitle>
-            <CardDescription>Today, including evaluation runs that used the model.</CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-5">
-            {usage ? (
-              <Meter label="Calls vs daily cap" value={usage.calls_today} max={usage.daily_call_cap} />
-            ) : (
-              <p className="text-sm text-muted-foreground">{summary.error ?? "Loading..."}</p>
-            )}
-            <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
-              <UsageRow
-                label="Estimated cost"
-                value={usage ? formatUsd(usage.estimated_cost_usd_today) : null}
-                title="At paid-tier audio rates. The free tier is not billed."
-              />
-              <UsageRow
-                label="Audio in / out"
-                value={
-                  usage
-                    ? `${usage.audio_minutes_in_today} / ${usage.audio_minutes_out_today} min`
-                    : null
-                }
-              />
-              <UsageRow
-                label="Latency p50"
-                value={usage ? formatMs(usage.latency_p50_ms) : null}
-                title="Caller's last words to Maya's first audio, live calls today."
-              />
-              <UsageRow label="Latency p95" value={usage ? formatMs(usage.latency_p95_ms) : null} />
-            </dl>
-            {usage && (
-              <p className="text-xs text-muted-foreground">
-                Latency from {usage.latency_samples.toLocaleString()} replies today.
-              </p>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Guardrails</CardTitle>
-          <CardDescription>
-            Settings here only tune the agent. The backend enforces every rule.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-5">
-          <ul className="grid gap-3 md:grid-cols-2">
-            {GUARDRAILS.map((rule) => (
-              <li key={rule.title} className="flex flex-col gap-1.5 rounded-lg border p-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="text-sm font-medium">{rule.title}</span>
-                  <Badge variant="secondary">
-                    <ShieldCheck aria-hidden />
-                    Enforced in code
-                  </Badge>
-                </div>
-                <p className="text-sm text-muted-foreground">{rule.detail}</p>
-              </li>
-            ))}
-          </ul>
-          <p className="rounded-lg bg-muted px-3 py-2 text-sm">
-            Speech can&rsquo;t be blocked before it plays, so policy violations are detected,
-            flagged, and corrected.
-          </p>
-          {summary.data && (
-            <div className="flex flex-col gap-2">
-              <h2 className="text-sm font-medium">Current settings</h2>
-              <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm sm:grid-cols-4">
-                <UsageRow label="Model" value={summary.data.settings.model} />
-                <UsageRow label="Integrations" value={summary.data.settings.integrations_mode} />
-                <UsageRow
-                  label="Max call length"
-                  value={`${summary.data.settings.max_call_seconds} s`}
-                />
-                <UsageRow label="Max turns" value={String(summary.data.settings.max_turns)} />
-                <UsageRow label="Daily call cap" value={String(summary.data.settings.daily_call_cap)} />
-                <UsageRow
-                  label="Silence ends a turn"
-                  value={`${summary.data.settings.vad_silence_duration_ms} ms`}
-                />
-                <UsageRow
-                  label="Ticket expires after"
-                  value={`${summary.data.settings.approval_ttl_seconds} s`}
-                />
-                <UsageRow label="Time zone" value={summary.data.settings.business_timezone} />
-              </dl>
-              <p className="text-xs text-muted-foreground">
-                Change these in <code>backend/.env</code> and restart the backend.
-              </p>
-            </div>
-          )}
-        </CardContent>
-      </Card>
-    </>
+          </li>
+        ))}
+      </ul>
+      {!canAct && (
+        <p className="text-xs text-muted-foreground">
+          Agents and admins can open and take over calls.
+        </p>
+      )}
+    </StatusBar>
   );
 }
 
-function UsageRow({ label, value, title }: { label: string; value: string | null; title?: string }) {
+function UsagePanel({ summary }: { summary: Resource<Summary> }) {
+  const usage = summary.data?.usage ?? null;
   return (
-    <div title={title}>
+    <Panel
+      title="Usage today"
+      footer={usage && `From ${plural(usage.latency_samples, "reply", "replies")} today`}
+    >
+      {usage === null ? (
+        summary.error ? (
+          // The metrics strip above shows the error and its Retry button.
+          <p className="text-sm text-muted-foreground">Usage didn&rsquo;t load.</p>
+        ) : (
+          <div className="flex flex-col gap-3" aria-busy>
+            <Skeleton className="w-40" />
+            <Skeleton className="h-2 w-full" />
+            {[0, 1, 2, 3].map((row) => (
+              <Skeleton key={row} className="w-full" />
+            ))}
+          </div>
+        )
+      ) : (
+        <>
+          <div className="flex flex-col gap-1">
+            <Meter label="Model sessions" value={usage.calls_today} max={usage.daily_call_cap} />
+            <p className="text-xs text-muted-foreground">
+              Includes live evaluation runs, not only live calls.
+            </p>
+          </div>
+          <dl className="flex flex-col divide-y-[0.5px] divide-line text-sm">
+            <UsageRow
+              label="Estimated cost"
+              value={formatUsd(usage.estimated_cost_usd_today)}
+              title="At paid-tier audio rates. The free tier is not billed."
+            />
+            <UsageRow
+              label="Audio in / out"
+              value={`${formatMinutes(usage.audio_minutes_in_today)} / ${formatMinutes(
+                usage.audio_minutes_out_today,
+              )}`}
+            />
+            <UsageRow
+              label="Latency p50"
+              value={usage.latency_p50_ms === null ? "Not recorded" : formatMs(usage.latency_p50_ms)}
+              title="From the caller's last words to Maya's first audio, live calls today."
+            />
+            <UsageRow
+              label="Latency p95"
+              value={usage.latency_p95_ms === null ? "Not recorded" : formatMs(usage.latency_p95_ms)}
+            />
+          </dl>
+        </>
+      )}
+    </Panel>
+  );
+}
+
+function UsageRow({ label, value, title }: { label: string; value: string; title?: string }) {
+  return (
+    <div className="flex items-baseline justify-between gap-3 py-2" title={title}>
       <dt className="text-muted-foreground">{label}</dt>
-      <dd className="font-medium">{value ?? "--"}</dd>
+      <dd className="font-medium tabular-nums">{value}</dd>
+    </div>
+  );
+}
+
+function GuardrailsPanel({ settings }: { settings: Settings | null }) {
+  return (
+    <Panel
+      title="Guardrails"
+      action={
+        <StatusChip tone="neutral" icon={<ShieldCheck aria-hidden className="size-3" />}>
+          Enforced in code
+        </StatusChip>
+      }
+      footer={
+        <>
+          <p>Settings here only tune the agent. The backend enforces every rule.</p>
+          <p>This list documents rules in the code. It is not a live status check.</p>
+        </>
+      }
+    >
+      <div className="-my-3">
+        {RULES.map((rule) => (
+          <CollapsibleRule key={rule.title} title={rule.title}>
+            {rule.detail(settings)}
+          </CollapsibleRule>
+        ))}
+        <CollapsibleRule title="Current settings" icon={<Settings2 className="size-4" />}>
+          {settings ? (
+            <div className="flex flex-col gap-2">
+              <dl className="grid grid-cols-2 gap-x-4 gap-y-2">
+                <SettingRow label="Model" value={settings.model} />
+                <SettingRow label="Integrations" value={settings.integrations_mode} />
+                <SettingRow
+                  label="Max call length"
+                  value={`${settings.max_call_seconds.toLocaleString()} s`}
+                />
+                <SettingRow label="Max turns" value={formatCount(settings.max_turns)} />
+                <SettingRow label="Daily call cap" value={formatCount(settings.daily_call_cap)} />
+                <SettingRow
+                  label="Silence ends a turn"
+                  value={formatMs(settings.vad_silence_duration_ms)}
+                />
+                <SettingRow
+                  label="Ticket expires after"
+                  value={`${settings.approval_ttl_seconds.toLocaleString()} s`}
+                />
+                <SettingRow label="Business time zone" value={settings.business_timezone} />
+              </dl>
+              <p className="text-xs">
+                Change these in <code>backend/.env</code> and restart the backend.
+              </p>
+            </div>
+          ) : (
+            <Skeleton className="w-full" />
+          )}
+        </CollapsibleRule>
+      </div>
+    </Panel>
+  );
+}
+
+function SettingRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <dt className="text-xs">{label}</dt>
+      <dd className="text-sm text-foreground">{value}</dd>
     </div>
   );
 }
