@@ -1,6 +1,6 @@
 "use client";
 
-import { LoaderCircle, LogOut } from "lucide-react";
+import { LoaderCircle } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { type FormEvent, type ReactNode, useState } from "react";
@@ -19,7 +19,7 @@ const SECTIONS = [
 
 /** Signs the team member in, then shows the control-room sections. */
 export function TeamShell({ children }: { children: ReactNode }) {
-  const { ready, user, signOut } = useTeamSession();
+  const { ready, user } = useTeamSession();
   const pathname = usePathname();
 
   if (!ready) {
@@ -29,40 +29,34 @@ export function TeamShell({ children }: { children: ReactNode }) {
     return <SignIn />;
   }
   return (
-    <div className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-6 px-4 py-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <nav aria-label="Control room" className="flex gap-1 text-sm">
-          {SECTIONS.map((section) => {
-            const active =
-              section.href === "/control-room"
-                ? pathname === section.href
-                : pathname.startsWith(section.href);
-            return (
-              <Link
-                key={section.href}
-                href={section.href}
-                aria-current={active ? "page" : undefined}
-                className={cn(
-                  "rounded-md px-3 py-1.5 transition-colors",
-                  active ? "bg-primary/10 font-medium text-primary" : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {section.label}
-              </Link>
-            );
-          })}
-        </nav>
-        <div className="flex items-center gap-3 text-sm">
-          <span>
-            {user.name} <span className="text-muted-foreground">({user.role})</span>
-          </span>
-          <Button variant="outline" size="sm" onClick={signOut}>
-            <LogOut />
-            Sign out
-          </Button>
-        </div>
-      </div>
-      {children}
+    <div className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-6 px-4 pb-6">
+      <nav
+        aria-label="Control room"
+        className="-mx-4 flex gap-4 overflow-x-auto border-b-[0.5px] border-line px-4 text-sm"
+      >
+        {SECTIONS.map((section) => {
+          const active =
+            section.href === "/control-room"
+              ? pathname === section.href
+              : pathname.startsWith(section.href);
+          return (
+            <Link
+              key={section.href}
+              href={section.href}
+              aria-current={active ? "page" : undefined}
+              className={cn(
+                "-mb-[0.5px] border-b-2 py-3 whitespace-nowrap outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
+                active
+                  ? "border-primary font-medium text-foreground"
+                  : "border-transparent text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {section.label}
+            </Link>
+          );
+        })}
+      </nav>
+      <main className="flex flex-col gap-6">{children}</main>
     </div>
   );
 }
