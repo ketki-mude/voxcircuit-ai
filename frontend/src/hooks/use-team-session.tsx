@@ -153,10 +153,10 @@ async function errorMessage(response: Response): Promise<string> {
 /** Load a control-room resource, refreshing every `intervalMs` (0 means once). */
 export function useTeamResource<T>(path: string | null, intervalMs = 0) {
   const { api } = useTeamSession();
-  const [state, setState] = useState<{ data: T | null; error: string | null }>({
-    data: null,
-    error: null,
-  });
+  // Data is kept with the path it came from, so a new path never shows the old path's data.
+  const [state, setState] = useState<{ path: string | null; data: T | null; error: string | null }>(
+    { path: null, data: null, error: null },
+  );
   const [version, setVersion] = useState(0);
 
   useEffect(() => {
@@ -165,11 +165,15 @@ export function useTeamResource<T>(path: string | null, intervalMs = 0) {
     const load = async () => {
       try {
         const data = await api<T>(path);
-        if (!cancelled) setState({ data, error: null });
+        if (!cancelled) setState({ path, data, error: null });
       } catch (error) {
         if (!cancelled) {
           const message = error instanceof Error ? error.message : "Something went wrong.";
-          setState((previous) => ({ data: previous.data, error: message }));
+          setState((previous) => ({
+            path,
+            data: previous.path === path ? previous.data : null,
+            error: message,
+          }));
         }
       }
     };
@@ -182,5 +186,6 @@ export function useTeamResource<T>(path: string | null, intervalMs = 0) {
   }, [api, path, intervalMs, version]);
 
   const reload = useCallback(() => setVersion((v) => v + 1), []);
-  return { ...state, reload };
+  const current = state.path === path ? state : { data: null, error: null };
+  return { data: current.data, error: current.error, reload };
 }

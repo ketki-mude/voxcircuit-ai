@@ -114,7 +114,14 @@ export interface CallDetail {
     decided_by: string | null;
     created_at: string;
     decided_at: string | null;
-    outcome: { success: boolean; summary: string } | null;
+    outcome: {
+      success: boolean;
+      /** Preformatted by the server in the business time zone. */
+      slot_label: string;
+      summary: string;
+      steps: { step: string; status: "done" | "failed"; attempts: number }[];
+      appointment_id: string | null;
+    } | null;
     steps: {
       step: string;
       status: string;

@@ -12,6 +12,17 @@ export function formatTime(iso: string | null): string {
   });
 }
 
+/** With seconds, for events that happen close together: 10:42:13 AM EDT. */
+export function formatTimeSeconds(iso: string | null): string {
+  if (!iso) return DASH;
+  return new Date(iso).toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    timeZoneName: "short",
+  });
+}
+
 export function formatDateTime(iso: string | null): string {
   if (!iso) return DASH;
   return new Date(iso).toLocaleString([], {
@@ -61,6 +72,12 @@ export function formatMinutes(minutes: number | null): string {
 /** Seconds with one decimal: 14.7 s. */
 export function formatSecondsDecimal(seconds: number | null): string {
   return seconds === null ? DASH : `${seconds.toFixed(1)} s`;
+}
+
+/** A call's length: 14.7 s under a minute, m:ss from a minute on. */
+export function formatDuration(seconds: number | null): string {
+  if (seconds === null) return DASH;
+  return seconds < 60 ? formatSecondsDecimal(seconds) : formatSeconds(seconds);
 }
 
 export function formatUsd(value: number | null): string {

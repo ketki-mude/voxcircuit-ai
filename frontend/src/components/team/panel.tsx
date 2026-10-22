@@ -8,6 +8,7 @@ export function Panel({
   action,
   footer,
   className,
+  bodyClassName,
   children,
 }: {
   title?: ReactNode;
@@ -15,6 +16,8 @@ export function Panel({
   action?: ReactNode;
   footer?: ReactNode;
   className?: string;
+  /** Classes for the content area, such as a scroll container. */
+  bodyClassName?: string;
   children: ReactNode;
 }) {
   const titleId = useId();
@@ -33,7 +36,7 @@ export function Panel({
           {action}
         </header>
       )}
-      <div className="flex flex-1 flex-col gap-3 p-4">{children}</div>
+      <div className={cn("flex flex-1 flex-col gap-3 p-4", bodyClassName)}>{children}</div>
       {footer && (
         <footer className="flex flex-col gap-1 border-t-[0.5px] border-line px-4 py-3 text-xs text-muted-foreground">
           {footer}
